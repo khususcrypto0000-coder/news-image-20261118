@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Build the entry image for the make.fun bounty
+"Sum up 18 November's world news in one image" (news-image-20261118).
+
+Writes a single 1024x1024 PNG newspaper-front-page infographic to
+  - <repo>/output/entry.png
+  - /output/entry.png  (when the /output directory can be created)
+
+Deterministic: no network, no timestamps, no randomness, fixed fonts.
+Running this program twice produces byte-identical output.
+
+Requires: Python 3.12+ and Pillow. DejaVu fonts from the system font path.
+"""
+
+import io
+import os
+from PIL import Image, ImageDraw, ImageFont
+
+# ---------------------------------------------------------------- constants
+W, H = 1024, 1024
+PAPER = (250, 247, 240)      # warm newsprint
+INK = (17, 17, 17)           # near-black
+RED = (185, 28, 28)          # headline accent
+NAVY = (30, 58, 95)          # secondary accent
+GOLD = (176, 141, 44)
+GREY = (90, 88, 82)
+RULE = (200, 195, 185)
+SKY = (214, 228, 240)
+SKYLINE = (30, 58, 95)
+
+SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+SERIF_B = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
+SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+SANS_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+
+def font(path, size):
+    return ImageFont.truetype(path, size)
+
+
+def wrap(draw, text, fnt, max_width):
+    """Greedy word wrap returning a list of lines that fit max_width."""
+    lines = []
+    for paragraph in text.split("\n"):
+        words = paragraph.split()
+        if not words:
+            lines.append("")
+            continue
+        line = words[0]
+        for word in words[1:]:
+            trial = line + " " + word
+            if draw.textlength(trial, font=fnt) <= max_width:
+                line = trial
+            else:
+                lines.append(line)
+                line = word
+        lines.append(line)
+    return lines
+
+
+def draw_wrapped(draw, xy, text, fnt, max_width, fill, leading=None):
+    """Draw wrapped text; return the y coordinate after the last line."""
+    x, y = xy
+    leading = leading or int(fnt.size * 1.32)
+    for line in wrap(draw, text, fnt, max_width):
+        draw.text((x, y), line, font=fnt, fill=fill)
+        y += leading
+    return y
+
+
+def kicker(draw, x, y, label, color=RED):
+    """Small caps section label with a red square bullet."""
+    fnt = font(SANS_B, 14)
+    draw.rectangle([x, y + 2, x + 9, y + 11], fill=color)
+    draw.text((x + 15, y), label, font=fnt, fill=color)
+    return y + 20
+
+
+# ------------------------------------------------------------------- artwork
+def draw_skyline(draw, box):
+    """Stylised Shenzhen skyline under a rising sun (all vector shapes).
+
+    Every shape is clipped to the box: towers are defined in box-local
+    coordinates and never exceed the box width.
+    """
+    x0, y0, x1, y1 = box
+    bw = x1 - x0
+    draw.rectangle(box, fill=SKY)
+    # sun
+    cx, cy, r = x0 + 96, y0 + 52, 30
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(224, 122, 54))
+    for dx in (-40, -20, 0, 20, 40):
+        draw.line([cx + dx, cy - r - 12, cx + dx, cy - r - 4],
+                  fill=(224, 122, 54), width=4)
+    # skyline blocks: (x offset, height, width) — all inside the box
+    ground = y1
+    towers = [(0, 76, 40), (46, 118, 52), (104, 92, 44), (154, 158, 58),
+              (218, 104, 46), (270, 140, 52), (328, 88, 42), (376, 122, 48),
+              (430, 80, 36)]
+    for dx, th, tw in towers:
+        draw.rectangle([x0 + dx, ground - th, x0 + dx + tw, ground],
+                       fill=SKYLINE)
+    # lit windows (fixed grid, deterministic)
+    for dx, th, tw in towers:
+        for wy in range(ground - th + 12, ground - 8, 22):
+            for wx in range(x0 + dx + 8, x0 + dx + tw - 8, 18):
+                if (wx + wy) % 44 == 0:
+                    draw.rectangle([wx, wy, wx + 6, wy + 8], fill=GOLD)
+    # three flag bars: USA, China, Russia
+    flags = [("USA", (178, 34, 34), (255, 255, 255)),
+             ("CHINA", (222, 41, 16), (255, 255, 255)),
+             ("RUSSIA", (255, 255, 255), INK)]
+    fx = x0 + 20
+    for name, colour, text_colour in flags:
+        draw.rectangle([fx, y1 - 32, fx + 108, y1 - 12], fill=colour,
+                       outline=INK, width=1)
+        draw.text((fx + 8, y1 - 30), name, font=font(SANS_B, 13),
+                  fill=text_colour)
+        fx += 120
+    draw.rectangle(box, outline=INK, width=2)
+    assert fx - 120 + 108 <= bw + 20  # flags stay inside the box
+
+
+# -------------------------------------------------------------------- render
+def build_image():
+    img = Image.new("RGB", (W, H), PAPER)
+    d = ImageDraw.Draw(img)
+    m = 36                      # outer margin
+    cw = W - 2 * m              # content width = 952
+
+    # ---- masthead ------------------------------------------------------
+    y = 28
+    d.text((m, y), "THE WORLD IN ONE PAGE", font=font(SERIF_B, 52), fill=INK)
+    y += 62
+    d.text((m, y), "THE DAILY GLOBE  •  ONE DAY, EVERY STORY THAT MATTERED",
+           font=font(SANS_B, 15), fill=GREY)
+    y += 24
+    d.line([(m, y), (W - m, y)], fill=INK, width=3)
+    y += 8
+    d.line([(m, y), (W - m, y)], fill=INK, width=1)
+    y += 12
+    d.text((m, y), "Wednesday, 18 November 2026", font=font(SERIF_B, 24),
+           fill=RED)
+    d.text((W - m - d.textlength("No. 322  •  Free to read", font=font(SANS, 15)),
+            y + 5), "No. 322  •  Free to read", font=font(SANS, 15), fill=GREY)
+    y += 36
+    d.line([(m, y), (W - m, y)], fill=INK, width=1)
+
+    # ---- lead story ----------------------------------------------------
+    y += 14
+    y = kicker(d, m, y, "LEAD  •  DIPLOMACY IN ASIA")
+    y += 2
+    d.text((m, y), "A POWER-SHIFT DAY", font=font(SERIF_B, 56), fill=INK)
+    y += 60
+    d.text((m, y), "AS THREE SUMMITS COLLIDE", font=font(SERIF_B, 32),
+           fill=NAVY)
+    y += 44
+
+    # skyline art + lead text side by side
+    art_box = (m, y, m + 470, y + 180)
+    draw_skyline(d, art_box)
+    tx = m + 490
+    lead = ("The APEC summit opened in Shenzhen, China, as Donald Trump "
+            "flew in from Quad talks in Manila. Tomorrow, Trump, Xi "
+            "Jinping and Vladimir Putin meet face to face in Shenzhen for "
+            "a first trilateral summit on the APEC sidelines.")
+    y2 = draw_wrapped(d, (tx, y + 2), lead, font(SERIF, 20), cw - 490, INK,
+                      leading=26)
+    y2 += 6
+    d.line([(tx, y2), (W - m, y2)], fill=RULE, width=1)
+    y2 += 10
+    d.text((tx, y2), "APEC runs 18–19 Nov in Shenzhen.",
+           font=font(SANS_B, 15), fill=NAVY)
+    y = max(art_box[3], y2 + 16) + 12
+    d.line([(m, y), (W - m, y)], fill=INK, width=1)
+
+    # ---- two-column row ------------------------------------------------
+    y += 12
+    col_w = (cw - 24) // 2
+    left_x, right_x = m, m + col_w + 24
+    base = y
+
+    y = kicker(d, left_x, base, "QUAD  •  MANILA")
+    d.text((left_x, y), "Trump lands in Manila\nfor Quad talks",
+           font=font(SERIF_B, 26), fill=INK)
+    yq = y + 56
+    yq = draw_wrapped(d, (left_x, yq),
+                      "The leaders of the US, India, Japan and Australia "
+                      "met in Manila on maritime security, cyber threats "
+                      "and trade — hours before Trump headed on to China.",
+                      font(SANS, 15), col_w, INK, leading=20)
+
+    yk = kicker(d, right_x, base, "MIDDLE EAST  •  GULF ON EDGE")
+    d.text((right_x, yk), "Iran hits US radar in\nBahrain; US strikes back",
+           font=font(SERIF_B, 26), fill=INK)
+    yi = yk + 56
+    yi = draw_wrapped(d, (right_x, yi),
+                      "Iran said it struck a US military radar site in "
+                      "Bahrain with drones. The US confirmed a strike on "
+                      "an IRGC missile base on Qeshm Island, and Kuwait "
+                      "reported drone interceptions. Bahrain later gave "
+                      "the all-clear.",
+                      font(SANS, 15), col_w, INK, leading=20)
+
+    y = max(yq, yi) + 12
+    d.line([(m, y), (W - m, y)], fill=INK, width=1)
+
+    # ---- three-column row ----------------------------------------------
+    y += 12
+    col3 = (cw - 48) // 3
+    xs = [m, m + col3 + 24, m + 2 * (col3 + 24)]
+    base = y
+
+    y = kicker(d, xs[0], base, "WAR IN EUROPE")
+    d.text((xs[0], y), "Ukraine hits the\nCrimean Bridge",
+           font=font(SERIF_B, 22), fill=INK)
+    y1 = y + 50
+    y1 = draw_wrapped(d, (xs[0], y1),
+                      "Kyiv said it damaged the Crimean Bridge in a major "
+                      "strike as Russia pounded bridges in Kyiv. Drone "
+                      "attacks continued despite peace talks in Abu Dhabi.",
+                      font(SANS, 14), col3, INK, leading=19)
+
+    y = kicker(d, xs[1], base, "GAZA")
+    d.text((xs[1], y), "Four nations demand\naid for flooded Gaza",
+           font=font(SERIF_B, 22), fill=INK)
+    y2 = y + 50
+    y2 = draw_wrapped(d, (xs[1], y2),
+                      "Australia, Canada, Italy and the UK jointly called "
+                      "on Israel to let aid reach Gaza, where flooding has "
+                      "deepened the crisis. Mediators warned the ceasefire "
+                      "could collapse without action.",
+                      font(SANS, 14), col3, INK, leading=19)
+
+    y = kicker(d, xs[2], base, "ASIA  •  SECURITY")
+    d.text((xs[2], y), "North Korea fires\nmissile to sea",
+           font=font(SERIF_B, 22), fill=INK)
+    y3 = y + 50
+    y3 = draw_wrapped(d, (xs[2], y3),
+                      "South Korea said the North launched a ballistic "
+                      "missile towards the Sea of Japan, hours after joint "
+                      "US–South Korea–Japan drills ended.",
+                      font(SANS, 14), col3, INK, leading=19)
+
+    y = max(y1, y2, y3) + 12
+    d.line([(m, y), (W - m, y)], fill=INK, width=1)
+
+    # ---- also today strip (two columns, one line per item) -------------
+    y += 10
+    y = kicker(d, m, y, "ALSO TODAY", color=NAVY)
+    col2 = (cw - 24) // 2
+    left_items = [
+        ("CYCLONE AKVAN", "Heads for Andhra coast; landfall 20 Nov."),
+        ("SPORT", "Dhoni retires from IPL; India win 10th SAFF."),
+        ("SPAIN", "General strike hits ports and factories."),
+    ]
+    right_items = [
+        ("SPACE", "Voyager 1 nears one light-day from Earth."),
+        ("RUSSIA", "Plane crash in Kemerovo kills 19."),
+    ]
+    for col_x, items in ((m, left_items), (m + col2 + 24, right_items)):
+        yy = y
+        for label, text in items:
+            d.text((col_x, yy), "▪  " + label + " — ",
+                   font=font(SANS_B, 13), fill=NAVY)
+            lx = col_x + d.textlength("▪  " + label + " — ",
+                                      font=font(SANS_B, 13))
+            draw_wrapped(d, (lx, yy), text, font(SANS, 13),
+                         col2 - (lx - col_x), INK, leading=18)
+            yy += 20
+    y += 3 * 20
+
+    # ---- footer ---------------------------------------------------------
+    y += 8
+    d.line([(m, y), (W - m, y)], fill=INK, width=1)
+    y += 8
+    d.text((m, y),
+           "Sources: Reuters, AP, Jagran Josh, Raj Global Studies, The Paris Eye, Daily Baku — 18 Nov 2026.",
+           font=font(SANS, 11), fill=GREY)
+    y += 16
+    d.text((m, y),
+           "Built by a deterministic Python program. No live data at runtime; all facts embedded above.",
+           font=font(SANS, 11), fill=GREY)
+    return img
+
+
+def main():
+    img = build_image()
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    data = buf.getvalue()
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    targets = [os.path.join(here, "output", "entry.png")]
+    try:
+        os.makedirs("/output", exist_ok=True)
+        targets.append("/output/entry.png")
+    except OSError:
+        pass
+    for path in targets:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        print("wrote {} ({} bytes)".format(path, len(data)))
+
+
+if __name__ == "__main__":
+    main()
